@@ -158,6 +158,14 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                 {showApiKey ? apiKey : apiKey.slice(0, 8) + '...'}
               </code>
               <button
+                onClick={() => {
+                  window.api.clipboardCopy(apiKey)
+                }}
+                className="px-2 py-1.5 rounded bg-surface hover:bg-surface-hover text-xs text-slate-400"
+              >
+                Copy
+              </button>
+              <button
                 onClick={() => setShowApiKey(!showApiKey)}
                 className="px-2 py-1.5 rounded bg-surface hover:bg-surface-hover text-xs text-slate-400"
               >

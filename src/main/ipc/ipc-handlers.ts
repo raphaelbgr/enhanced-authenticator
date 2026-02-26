@@ -12,6 +12,7 @@ import {
   authenticateBiometric
 } from '../biometric/biometric-auth'
 import { exportVault, importVaultFromFile } from '../export/export-manager'
+import { lockController } from '../autolock/lock-controller'
 import type { AccountEntry, ImportResult } from '../../shared/types'
 
 let clipboardTimer: ReturnType<typeof setTimeout> | null = null
@@ -26,6 +27,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.VAULT_UNLOCK, async (_e, password: string) => {
     await vaultManager.unlock(password)
+    lockController.updateTimeout(vaultManager.getSettings().autoLockMs)
   })
 
   ipcMain.handle(IPC.VAULT_LOCK, () => {
@@ -129,6 +131,9 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, updates: Record<string, unknown>) => {
     vaultManager.updateSettings(updates)
+    if (updates.autoLockMs !== undefined) {
+      lockController.updateTimeout(updates.autoLockMs as number)
+    }
   })
 
   // API key
@@ -153,6 +158,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.BIOMETRIC_UNLOCK, async () => {
     const keyHex = await authenticateBiometric()
     await vaultManager.unlockWithKey(keyHex)
+    lockController.updateTimeout(vaultManager.getSettings().autoLockMs)
   })
 
   // Export/Import
