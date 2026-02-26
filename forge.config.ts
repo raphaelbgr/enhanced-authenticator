@@ -7,13 +7,30 @@ import { MakerRpm } from '@electron-forge/maker-rpm'
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    icon: './resources/icon'
+    icon: './resources/icon',
+    ignore: [
+      /^\/(src|cli|scripts|\.git)/,
+      /^\/(tsconfig|postcss|electron\.vite|forge\.config)/,
+      /^\/(\.gitignore|\.env|README)/
+    ]
   },
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({
+      setupIcon: './resources/icon.ico'
+    }),
     new MakerZIP({}, ['darwin']),
-    new MakerDeb({}),
-    new MakerRpm({})
+    new MakerDeb({
+      options: {
+        icon: './resources/icon.png',
+        categories: ['Utility', 'Security']
+      }
+    }),
+    new MakerRpm({
+      options: {
+        icon: './resources/icon.png',
+        categories: ['Utility', 'Security']
+      }
+    })
   ]
 }
 
