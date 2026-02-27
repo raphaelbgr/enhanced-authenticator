@@ -41,7 +41,22 @@
 - **Screenshot Protection** &mdash; Optional screen capture prevention
 - **Persistent Window Position** &mdash; Remembers window size and position across sessions
 
-## Quick Start
+## Download
+
+Grab the latest release for your platform from [**Releases**](https://github.com/raphaelbgr/enhanced-authenticator/releases).
+
+| Platform | File |
+|----------|------|
+| Windows x64 | `enhanced-authenticator-v*-win32-x64.zip` |
+| macOS Intel | `enhanced-authenticator-v*-darwin-x64.zip` |
+| macOS Apple Silicon | `enhanced-authenticator-v*-darwin-arm64.zip` |
+| Linux x64 | `enhanced-authenticator-v*-linux-x64.zip` |
+
+Extract the zip and run the executable. No installer required.
+
+> **Windows SmartScreen warning**: Since the app is not code-signed, Windows Defender SmartScreen will show an "Unknown publisher" warning on first launch. This is normal for unsigned apps. Click **"More info"** then **"Run anyway"**. The warning only appears once.
+
+## Development
 
 ```bash
 # Install dependencies
