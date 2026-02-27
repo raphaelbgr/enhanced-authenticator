@@ -31,9 +31,10 @@ export interface VaultSettings {
   minimizeToTray: boolean
   apiEnabled: boolean
   apiPort: number
+  apiListenAll: boolean
 }
 
-export type AppState = 'setup' | 'locked' | 'unlocked'
+export type AppState = 'loading' | 'setup' | 'locked' | 'unlocked'
 
 export interface TotpCode {
   id: string
@@ -56,5 +57,6 @@ export const DEFAULT_SETTINGS: VaultSettings = {
   biometricEnabled: false,
   minimizeToTray: true,
   apiEnabled: false,
-  apiPort: 29170
+  apiPort: 29170,
+  apiListenAll: false
 }

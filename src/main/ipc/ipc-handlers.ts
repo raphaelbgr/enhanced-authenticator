@@ -13,6 +13,7 @@ import {
 } from '../biometric/biometric-auth'
 import { exportVault, importVaultFromFile } from '../export/export-manager'
 import { lockController } from '../autolock/lock-controller'
+import { startApiServer, stopApiServer } from '../api/api-server'
 import type { AccountEntry, ImportResult } from '../../shared/types'
 
 let clipboardTimer: ReturnType<typeof setTimeout> | null = null
@@ -23,18 +24,16 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.VAULT_CREATE, async (_e, password: string) => {
     await vaultManager.create(password)
+    lockController.activate(vaultManager.getSettings().autoLockMs)
   })
 
   ipcMain.handle(IPC.VAULT_UNLOCK, async (_e, password: string) => {
     await vaultManager.unlock(password)
-    lockController.updateTimeout(vaultManager.getSettings().autoLockMs)
+    lockController.activate(vaultManager.getSettings().autoLockMs)
   })
 
   ipcMain.handle(IPC.VAULT_LOCK, () => {
-    vaultManager.lock()
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.APP_LOCKED)
-    }
+    lockController.lock()
   })
 
   ipcMain.handle(IPC.VAULT_CHANGE_PASSWORD, async (_e, oldPw: string, newPw: string) => {
@@ -42,6 +41,9 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.VAULT_GET_STATE, () => vaultManager.appState)
+
+  // Single atomic call: checks vault file + returns correct state (no race)
+  ipcMain.handle(IPC.VAULT_INITIAL_STATE, () => vaultManager.getInitialState())
 
   // Accounts
   ipcMain.handle(IPC.ACCOUNTS_LIST, () => vaultManager.getAccountsMeta())
@@ -65,6 +67,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.ACCOUNTS_REMOVE, (_e, id: string) => {
     vaultManager.removeAccount(id)
+  })
+
+  ipcMain.handle(IPC.ACCOUNTS_REORDER, (_e, orderedIds: string[]) => {
+    vaultManager.reorderAccounts(orderedIds)
   })
 
   ipcMain.handle(IPC.ACCOUNTS_IMPORT_URI, (_e, input: string): ImportResult => {
@@ -129,10 +135,25 @@ export function registerIpcHandlers(): void {
   // Settings
   ipcMain.handle(IPC.SETTINGS_GET, () => vaultManager.getSettings())
 
-  ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, updates: Record<string, unknown>) => {
+  ipcMain.handle(IPC.SETTINGS_UPDATE, async (_e, updates: Record<string, unknown>) => {
     vaultManager.updateSettings(updates)
     if (updates.autoLockMs !== undefined) {
       lockController.updateTimeout(updates.autoLockMs as number)
+    }
+    const needsRestart = updates.apiListenAll !== undefined || updates.apiPort !== undefined
+    if (updates.apiEnabled !== undefined) {
+      if (updates.apiEnabled) {
+        const settings = vaultManager.getSettings()
+        startApiServer(settings.apiPort, settings.apiListenAll ? '0.0.0.0' : '127.0.0.1')
+      } else {
+        await stopApiServer()
+      }
+    } else if (needsRestart) {
+      const settings = vaultManager.getSettings()
+      if (settings.apiEnabled) {
+        await stopApiServer()
+        startApiServer(settings.apiPort, settings.apiListenAll ? '0.0.0.0' : '127.0.0.1')
+      }
     }
   })
 
@@ -158,7 +179,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.BIOMETRIC_UNLOCK, async () => {
     const keyHex = await authenticateBiometric()
     await vaultManager.unlockWithKey(keyHex)
-    lockController.updateTimeout(vaultManager.getSettings().autoLockMs)
+    lockController.activate(vaultManager.getSettings().autoLockMs)
   })
 
   // Export/Import
@@ -174,6 +195,15 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.IMPORT_VAULT, async (_e, filePath: string, password: string) => {
     return importVaultFromFile(filePath, password)
+  })
+
+  ipcMain.handle(IPC.IMPORT_VAULT_PICK, async () => {
+    const result = await dialog.showOpenDialog({
+      filters: [{ name: 'Enhanced Authenticator Vault', extensions: ['eav'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
   })
 
   // QR export

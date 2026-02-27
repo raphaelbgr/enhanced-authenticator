@@ -8,6 +8,9 @@ import { startApiServer, stopApiServer } from './api/api-server'
 import { createTray, updateTrayMenu, destroyTray } from './tray/tray-manager'
 import { vaultManager } from './vault/vault-manager'
 
+// Force consistent app name across dev and packaged builds
+app.setName('enhanced-authenticator')
+
 // Single instance lock
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -155,11 +158,12 @@ function createWindow(): void {
   createTray(mainWindow)
 
   // Refresh tray menu periodically
-  setInterval(() => {
+  trayInterval = setInterval(() => {
     if (mainWindow) updateTrayMenu(mainWindow)
   }, 5000)
 }
 
+let trayInterval: ReturnType<typeof setInterval> | null = null
 let isQuitting = false
 
 app.whenReady().then(() => {
@@ -169,8 +173,15 @@ app.whenReady().then(() => {
   // Start idle monitoring
   lockController.start()
 
-  // Start API server
-  startApiServer()
+  // Start API server only if enabled in settings
+  try {
+    const settings = vaultManager.getSettings()
+    if (settings.apiEnabled) {
+      startApiServer(settings.apiPort, settings.apiListenAll ? '0.0.0.0' : '127.0.0.1')
+    }
+  } catch {
+    // Vault not yet created/unlocked, skip API server
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -189,6 +200,7 @@ app.on('second-instance', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  if (trayInterval) { clearInterval(trayInterval); trayInterval = null }
   lockController.stop()
   stopApiServer()
   destroyTray()
