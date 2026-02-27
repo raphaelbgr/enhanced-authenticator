@@ -25,17 +25,21 @@ export default function QrExportDialog({ open, onClose }: QrExportDialogProps) {
     setCurrentIndex(0)
     setBatches([])
 
+    let cancelled = false
     window.api
       .accountsExportQr()
       .then((result) => {
+        if (cancelled) return
         if (result.length === 0) {
           setError('No accounts to export')
         } else {
           setBatches(result)
         }
       })
-      .catch((e) => setError((e as Error).message))
-      .finally(() => setLoading(false))
+      .catch((e) => { if (!cancelled) setError((e as Error).message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+
+    return () => { cancelled = true }
   }, [open])
 
   if (!open) return null

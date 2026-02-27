@@ -6,6 +6,7 @@ export const IPC = {
   VAULT_LOCK: 'vault:lock',
   VAULT_CHANGE_PASSWORD: 'vault:change-password',
   VAULT_GET_STATE: 'vault:get-state',
+  VAULT_INITIAL_STATE: 'vault:initial-state',
 
   // Accounts
   ACCOUNTS_LIST: 'accounts:list',
@@ -13,6 +14,8 @@ export const IPC = {
   ACCOUNTS_REMOVE: 'accounts:remove',
   ACCOUNTS_IMPORT_URI: 'accounts:import-uri',
   ACCOUNTS_IMPORT_MIGRATION: 'accounts:import-migration',
+  ACCOUNTS_REORDER: 'accounts:reorder',
+  ACCOUNTS_UPDATE: 'accounts:update',
 
   // TOTP
   TOTP_GET_CODES: 'totp:get-codes',
@@ -34,10 +37,12 @@ export const IPC = {
   // API
   API_GET_KEY: 'api:get-key',
   API_REGENERATE_KEY: 'api:regenerate-key',
+  API_GET_LAN_IP: 'api:get-lan-ip',
 
   // Export
   EXPORT_VAULT: 'export:vault',
   IMPORT_VAULT: 'import:vault',
+  IMPORT_VAULT_PICK: 'import:vault-pick',
 
   // QR
   ACCOUNTS_EXPORT_QR: 'accounts:export-qr',

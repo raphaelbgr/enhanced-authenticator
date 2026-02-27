@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
+import type { VaultSettings } from '../shared/types'
 import { useLockState } from './hooks/useLockState'
 import { useTotp } from './hooks/useTotp'
 import SetupScreen from './components/SetupScreen'
@@ -8,20 +9,63 @@ import TokenList from './components/TokenList'
 import ImportDialog from './components/ImportDialog'
 import SettingsPanel from './components/SettingsPanel'
 
+function useClock() {
+  const [time, setTime] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setTime(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return time
+}
+
 export default function App() {
   const appState = useLockState()
   useTotp()
+  const now = useClock()
 
   const [showImport, setShowImport] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [settings, setSettings] = useState<VaultSettings | null>(null)
+  const [lanIp, setLanIp] = useState('')
 
+  useEffect(() => {
+    if (appState !== 'unlocked') return
+    window.api.settingsGet().then(setSettings)
+    window.api.apiGetLanIp().then(setLanIp)
+  }, [appState, showSettings])
+
+  if (appState === 'loading') return <div className="flex h-screen bg-slate-900" />
   if (appState === 'setup') return <SetupScreen />
   if (appState === 'locked') return <LockScreen />
+
+  const timeStr = now.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
 
   return (
     <div className="flex flex-col h-screen bg-slate-900">
       {/* Header */}
-      <div className="px-4 pt-4 pb-2">
+      <div className="px-4 pt-3 pb-1 flex items-center justify-between">
+        <div className="text-xs font-medium text-slate-500 tracking-wide">
+          Enhanced Authenticator
+        </div>
+        <div className="text-sm font-mono text-slate-400 tabular-nums">
+          {timeStr}
+        </div>
+      </div>
+
+      {settings?.apiEnabled && (
+        <div className="px-4 pb-1">
+          <div className="text-[10px] text-slate-500 font-mono truncate">
+            API at http://{settings.apiListenAll ? lanIp : '127.0.0.1'}:{settings.apiPort}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 pb-2">
         <SearchBar />
       </div>
 

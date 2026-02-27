@@ -22,6 +22,27 @@ import type {
 } from '../../shared/types'
 import { MIN_PASSWORD_LENGTH } from '../../shared/constants'
 
+/**
+ * Simple async mutex to serialize all vault state mutations.
+ * Prevents races between concurrent IPC handlers, idle timer, API, and tray.
+ */
+class Mutex {
+  private queue: Promise<void> = Promise.resolve()
+
+  async run<T>(fn: () => T | Promise<T>): Promise<T> {
+    let release: () => void
+    const next = new Promise<void>((resolve) => { release = resolve })
+    const prev = this.queue
+    this.queue = next
+    await prev
+    try {
+      return await fn()
+    } finally {
+      release!()
+    }
+  }
+}
+
 class VaultManager {
   private state: VaultState = {
     appState: 'setup',
@@ -31,68 +52,77 @@ class VaultManager {
     salt: null
   }
 
+  private mutex = new Mutex()
+
   get appState(): AppState {
     return this.state.appState
   }
 
+  /** Pure check — no side effects on appState. */
   vaultExists(): boolean {
     const data = readVaultFile(this.state.vaultPath)
-    if (data) {
-      this.state.appState = 'locked'
-      return true
-    }
-    return false
+    return data !== null
+  }
+
+  /** Returns the correct initial state based on vault file existence. */
+  getInitialState(): AppState {
+    if (this.state.appState === 'unlocked') return 'unlocked'
+    return this.vaultExists() ? 'locked' : 'setup'
   }
 
   async create(password: string): Promise<void> {
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
-    }
+    return this.mutex.run(async () => {
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+      }
 
-    const vault = createEmptyVault()
-    // Generate an API key
-    vault.apiKey = crypto.randomBytes(32).toString('hex')
+      const vault = createEmptyVault()
+      vault.apiKey = crypto.randomBytes(32).toString('hex')
 
-    const { key, salt } = await deriveKey(password)
-    const plaintext = Buffer.from(JSON.stringify(vault), 'utf-8')
-    const { iv, authTag, ciphertext } = encrypt(key, plaintext)
-    const serialized = serializeVault(salt, iv, authTag, ciphertext)
+      const { key, salt } = await deriveKey(password)
+      const plaintext = Buffer.from(JSON.stringify(vault), 'utf-8')
+      const { iv, authTag, ciphertext } = encrypt(key, plaintext)
+      const serialized = serializeVault(salt, iv, authTag, ciphertext)
 
-    writeVaultFile(this.state.vaultPath, serialized)
+      writeVaultFile(this.state.vaultPath, serialized)
 
-    this.state.derivedKey = key
-    this.state.vaultData = vault
-    this.state.salt = salt
-    this.state.appState = 'unlocked'
+      this.state.derivedKey = key
+      this.state.vaultData = vault
+      this.state.salt = salt
+      this.state.appState = 'unlocked'
+    })
   }
 
   async unlock(password: string): Promise<void> {
-    const fileData = readVaultFile(this.state.vaultPath)
-    if (!fileData) {
-      throw new Error('No vault file found')
-    }
+    return this.mutex.run(async () => {
+      const fileData = readVaultFile(this.state.vaultPath)
+      if (!fileData) {
+        throw new Error('No vault file found')
+      }
 
-    const { salt, iv, authTag, ciphertext } = deserializeVault(fileData)
-    const { key } = await deriveKey(password, salt)
+      const { salt, iv, authTag, ciphertext } = deserializeVault(fileData)
+      const { key } = await deriveKey(password, salt)
 
-    let plaintext: Buffer
-    try {
-      plaintext = decrypt(key, iv, authTag, ciphertext)
-    } catch {
-      key.wipe()
-      throw new Error('Invalid password')
-    }
+      let plaintext: Buffer
+      try {
+        plaintext = decrypt(key, iv, authTag, ciphertext)
+      } catch {
+        key.wipe()
+        throw new Error('Invalid password')
+      }
 
-    const vaultData = migrateVault(JSON.parse(plaintext.toString('utf-8')))
-    plaintext.fill(0)
+      const vaultData = migrateVault(JSON.parse(plaintext.toString('utf-8')))
+      plaintext.fill(0)
 
-    this.state.derivedKey = key
-    this.state.vaultData = vaultData
-    this.state.salt = salt
-    this.state.appState = 'unlocked'
+      this.state.derivedKey = key
+      this.state.vaultData = vaultData
+      this.state.salt = salt
+      this.state.appState = 'unlocked'
+    })
   }
 
   lock(): void {
+    // Synchronous — safe to call from mutex.run or directly
     if (this.state.derivedKey) {
       this.state.derivedKey.wipe()
     }
@@ -103,39 +133,46 @@ class VaultManager {
   }
 
   async changePassword(oldPassword: string, newPassword: string): Promise<void> {
-    if (newPassword.length < MIN_PASSWORD_LENGTH) {
-      throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
-    }
-    if (!this.state.vaultData) {
-      throw new Error('Vault is not unlocked')
-    }
+    return this.mutex.run(async () => {
+      if (newPassword.length < MIN_PASSWORD_LENGTH) {
+        throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+      }
+      if (!this.state.vaultData) {
+        throw new Error('Vault is not unlocked')
+      }
 
-    // Verify old password
-    const fileData = readVaultFile(this.state.vaultPath)
-    if (!fileData) throw new Error('No vault file found')
-    const { salt: oldSalt, iv: oldIv, authTag: oldTag, ciphertext: oldCt } = deserializeVault(fileData)
-    const { key: oldKey } = await deriveKey(oldPassword, oldSalt)
-    try {
-      decrypt(oldKey, oldIv, oldTag, oldCt)
-    } catch {
+      // Verify old password
+      const fileData = readVaultFile(this.state.vaultPath)
+      if (!fileData) throw new Error('No vault file found')
+      const { salt: oldSalt, iv: oldIv, authTag: oldTag, ciphertext: oldCt } = deserializeVault(fileData)
+      const { key: oldKey } = await deriveKey(oldPassword, oldSalt)
+      try {
+        decrypt(oldKey, oldIv, oldTag, oldCt)
+      } catch {
+        oldKey.wipe()
+        throw new Error('Invalid current password')
+      }
       oldKey.wipe()
-      throw new Error('Invalid current password')
-    }
-    oldKey.wipe()
 
-    // Re-encrypt with new password
-    const { key: newKey, salt: newSalt } = await deriveKey(newPassword)
-    const plaintext = Buffer.from(JSON.stringify(this.state.vaultData), 'utf-8')
-    const { iv, authTag, ciphertext } = encrypt(newKey, plaintext)
-    plaintext.fill(0)
-    const serialized = serializeVault(newSalt, iv, authTag, ciphertext)
-    writeVaultFile(this.state.vaultPath, serialized)
+      // Re-check state after awaits (lock could have happened during key derivation)
+      if (!this.state.vaultData) {
+        throw new Error('Vault was locked during password change')
+      }
 
-    if (this.state.derivedKey) {
-      this.state.derivedKey.wipe()
-    }
-    this.state.derivedKey = newKey
-    this.state.salt = newSalt
+      // Re-encrypt with new password
+      const { key: newKey, salt: newSalt } = await deriveKey(newPassword)
+      const plaintext = Buffer.from(JSON.stringify(this.state.vaultData), 'utf-8')
+      const { iv, authTag, ciphertext } = encrypt(newKey, plaintext)
+      plaintext.fill(0)
+      const serialized = serializeVault(newSalt, iv, authTag, ciphertext)
+      writeVaultFile(this.state.vaultPath, serialized)
+
+      if (this.state.derivedKey) {
+        this.state.derivedKey.wipe()
+      }
+      this.state.derivedKey = newKey
+      this.state.salt = newSalt
+    })
   }
 
   private save(): void {
@@ -163,7 +200,6 @@ class VaultManager {
       entry.meta.id = uuidv4()
       entry.secret.id = entry.meta.id
     }
-    // Dedup check
     const exists = this.state.vaultData.accounts.some(
       (a) => a.meta.issuer === entry.meta.issuer && a.meta.label === entry.meta.label
     )
@@ -192,6 +228,33 @@ class VaultManager {
   getAllAccounts(): AccountEntry[] {
     if (!this.state.vaultData) throw new Error('Vault is not unlocked')
     return this.state.vaultData.accounts
+  }
+
+  updateAccountMeta(id: string, updates: { issuer?: string; label?: string }): void {
+    if (!this.state.vaultData) throw new Error('Vault is not unlocked')
+    const account = this.state.vaultData.accounts.find((a) => a.meta.id === id)
+    if (!account) throw new Error('Account not found')
+    if (updates.issuer !== undefined) account.meta.issuer = updates.issuer
+    if (updates.label !== undefined) account.meta.label = updates.label
+    this.save()
+  }
+
+  reorderAccounts(orderedIds: string[]): void {
+    if (!this.state.vaultData) throw new Error('Vault is not unlocked')
+    const byId = new Map(this.state.vaultData.accounts.map((a) => [a.meta.id, a]))
+    const reordered: AccountEntry[] = []
+    for (const id of orderedIds) {
+      const entry = byId.get(id)
+      if (entry) {
+        reordered.push(entry)
+        byId.delete(id)
+      }
+    }
+    for (const entry of byId.values()) {
+      reordered.push(entry)
+    }
+    this.state.vaultData.accounts = reordered
+    this.save()
   }
 
   // Settings
@@ -225,39 +288,39 @@ class VaultManager {
     return this.state.vaultData.apiKey
   }
 
-  // Vault data access for export
   getVaultData(): VaultData | null {
     return this.state.vaultData
   }
 
-  // Derived key access for biometric storage
   getDerivedKeyHex(): string | null {
     if (!this.state.derivedKey) return null
     return this.state.derivedKey.buffer.toString('hex')
   }
 
   async unlockWithKey(keyHex: string): Promise<void> {
-    const fileData = readVaultFile(this.state.vaultPath)
-    if (!fileData) throw new Error('No vault file found')
+    return this.mutex.run(async () => {
+      const fileData = readVaultFile(this.state.vaultPath)
+      if (!fileData) throw new Error('No vault file found')
 
-    const { salt, iv, authTag, ciphertext } = deserializeVault(fileData)
-    const key = SecureBuffer.from(Buffer.from(keyHex, 'hex'))
+      const { salt, iv, authTag, ciphertext } = deserializeVault(fileData)
+      const key = SecureBuffer.from(Buffer.from(keyHex, 'hex'))
 
-    let plaintext: Buffer
-    try {
-      plaintext = decrypt(key, iv, authTag, ciphertext)
-    } catch {
-      key.wipe()
-      throw new Error('Invalid key')
-    }
+      let plaintext: Buffer
+      try {
+        plaintext = decrypt(key, iv, authTag, ciphertext)
+      } catch {
+        key.wipe()
+        throw new Error('Invalid key')
+      }
 
-    const vaultData = migrateVault(JSON.parse(plaintext.toString('utf-8')))
-    plaintext.fill(0)
+      const vaultData = migrateVault(JSON.parse(plaintext.toString('utf-8')))
+      plaintext.fill(0)
 
-    this.state.derivedKey = key
-    this.state.vaultData = vaultData
-    this.state.salt = salt
-    this.state.appState = 'unlocked'
+      this.state.derivedKey = key
+      this.state.vaultData = vaultData
+      this.state.salt = salt
+      this.state.appState = 'unlocked'
+    })
   }
 }
 

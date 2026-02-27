@@ -110,9 +110,6 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
-    if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
-      mainWindow?.webContents.openDevTools({ mode: 'detach' })
-    }
   })
 
   // Save bounds on move/resize (debounced)

@@ -11,13 +11,8 @@ export function useLockState() {
       return
     }
 
-    // Check initial state
-    window.api.vaultGetState().then(setAppState).catch(() => setAppState('setup'))
-
-    // If vault doesn't exist, we're in setup
-    window.api.vaultExists().then((exists) => {
-      if (!exists) setAppState('setup')
-    }).catch(() => setAppState('setup'))
+    // Single atomic IPC call — no race between vaultExists and vaultGetState
+    window.api.vaultInitialState().then(setAppState).catch(() => setAppState('setup'))
 
     // Listen for lock/unlock events from main process
     const offLocked = window.api.onLocked(() => {

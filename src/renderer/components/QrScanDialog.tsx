@@ -8,6 +8,26 @@ interface QrScanDialogProps {
   onClose: () => void
 }
 
+interface BatchResult {
+  imported: number
+  skipped: number
+  failed: number
+  errors: string[]
+}
+
+async function decodeQrFromFile(file: File): Promise<string | null> {
+  const bitmap = await createImageBitmap(file)
+  const canvas = document.createElement('canvas')
+  canvas.width = bitmap.width
+  canvas.height = bitmap.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(bitmap, 0, 0)
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const code = jsQR(imageData.data, imageData.width, imageData.height)
+  return code?.data ?? null
+}
+
 export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
   const [tab, setTab] = useState<Tab>('camera')
   const [result, setResult] = useState<string | null>(null)
@@ -15,14 +35,19 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [scannedBatches, setScannedBatches] = useState(0)
   const [expectedBatches, setExpectedBatches] = useState<number | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scanningRef = useRef(false)
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const stopCamera = useCallback(() => {
     scanningRef.current = false
+    if (resumeTimerRef.current) { clearTimeout(resumeTimerRef.current); resumeTimerRef.current = null }
     if (streamRef.current) {
       for (const track of streamRef.current.getTracks()) {
         track.stop()
@@ -61,6 +86,67 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
     },
     []
   )
+
+  const handleMultipleFiles = useCallback(async (files: File[]) => {
+    const images = files.filter((f) => f.type.startsWith('image/'))
+    if (images.length === 0) {
+      setResult('No image files found.')
+      return
+    }
+
+    setLoading(true)
+    setResult(null)
+    setProgress(`Processing 0 of ${images.length}...`)
+
+    const batch: BatchResult = { imported: 0, skipped: 0, failed: 0, errors: [] }
+
+    for (let i = 0; i < images.length; i++) {
+      setProgress(`Processing ${i + 1} of ${images.length}...`)
+      try {
+        const uri = await decodeQrFromFile(images[i])
+        if (!uri) {
+          batch.failed++
+          batch.errors.push(`${images[i].name}: no QR code found`)
+          continue
+        }
+
+        let res
+        if (uri.startsWith('otpauth-migration://')) {
+          res = await window.api.accountsImportMigration(uri)
+        } else if (uri.startsWith('otpauth://')) {
+          res = await window.api.accountsImportUri(uri)
+        } else {
+          batch.failed++
+          batch.errors.push(`${images[i].name}: not a valid otpauth URI`)
+          continue
+        }
+
+        batch.imported += res.imported
+        batch.skipped += res.skipped
+        for (const err of res.errors) {
+          batch.errors.push(`${images[i].name}: ${err}`)
+        }
+      } catch (e) {
+        batch.failed++
+        batch.errors.push(`${images[i].name}: ${(e as Error).message}`)
+      }
+    }
+
+    setProgress(null)
+    setLoading(false)
+
+    const parts: string[] = []
+    parts.push(`Imported ${batch.imported} account(s) from ${images.length} image(s)`)
+    if (batch.skipped) parts.push(`${batch.skipped} skipped`)
+    if (batch.failed) parts.push(`${batch.failed} failed`)
+    let msg = parts.join(', ')
+    if (batch.errors.length > 0) {
+      const shown = batch.errors.slice(0, 3)
+      msg += '. ' + shown.join('; ')
+      if (batch.errors.length > 3) msg += `; +${batch.errors.length - 3} more`
+    }
+    setResult(msg)
+  }, [])
 
   const startCamera = useCallback(async () => {
     setCameraError(null)
@@ -101,7 +187,8 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
             scanningRef.current = false
             handleDecodedUri(uri).then(() => {
               // Resume scanning for batch QRs
-              setTimeout(() => {
+              resumeTimerRef.current = setTimeout(() => {
+                resumeTimerRef.current = null
                 scanningRef.current = true
                 requestAnimationFrame(scan)
               }, 2000)
@@ -126,6 +213,8 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
       setScannedBatches(0)
       setExpectedBatches(null)
       setCameraError(null)
+      setProgress(null)
+      setDragging(false)
       return
     }
 
@@ -141,36 +230,38 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
   if (!open) return null
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const fileList = e.target.files
+    if (!fileList || fileList.length === 0) return
+    const files = Array.from(fileList)
+    e.target.value = ''
+    await handleMultipleFiles(files)
+  }
 
-    setLoading(true)
-    setResult(null)
-    try {
-      // Read the file and decode QR in the renderer using canvas
-      const bitmap = await createImageBitmap(file)
-      const canvas = document.createElement('canvas')
-      canvas.width = bitmap.width
-      canvas.height = bitmap.height
-      const ctx = canvas.getContext('2d')
-      if (!ctx) throw new Error('Canvas not available')
-      ctx.drawImage(bitmap, 0, 0)
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-      const code = jsQR(imageData.data, imageData.width, imageData.height)
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
 
-      if (!code) {
-        setResult('No QR code found in the image.')
-        return
-      }
-
-      await handleDecodedUri(code.data)
-    } catch (err) {
-      setResult(`Error: ${(err as Error).message}`)
-    } finally {
-      setLoading(false)
-      // Reset input so the same file can be selected again
-      e.target.value = ''
+    const items = e.dataTransfer.files
+    if (!items || items.length === 0) return
+    const files = Array.from(items).filter((f) => f.type.startsWith('image/'))
+    if (files.length === 0) {
+      setResult('No image files found in dropped items.')
+      return
     }
+    await handleMultipleFiles(files)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
   }
 
   const tabClass = (t: Tab) =>
@@ -191,7 +282,7 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
             Camera
           </button>
           <button onClick={() => setTab('file')} className={tabClass('file')}>
-            Image File
+            Image Files
           </button>
         </div>
 
@@ -234,9 +325,19 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
         {/* File tab */}
         {tab === 'file' && (
           <div className="mb-3">
-            <label className="flex flex-col items-center justify-center w-full h-32 bg-surface border-2 border-dashed border-slate-600 rounded-xl cursor-pointer hover:border-accent/50 transition-colors">
+            <div
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onClick={() => fileInputRef.current?.click()}
+              className={`flex flex-col items-center justify-center w-full h-32 bg-surface border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
+                dragging
+                  ? 'border-accent bg-accent/10'
+                  : 'border-slate-600 hover:border-accent/50'
+              }`}
+            >
               <svg
-                className="w-8 h-8 text-slate-500 mb-2"
+                className={`w-8 h-8 mb-2 ${dragging ? 'text-accent' : 'text-slate-500'}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -248,15 +349,19 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
                   d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
                 />
               </svg>
-              <span className="text-sm text-slate-400">Click to select image</span>
-              <span className="text-xs text-slate-500 mt-1">PNG, JPG, or WebP</span>
+              <span className="text-sm text-slate-400">
+                {dragging ? 'Drop images here' : 'Click or drag & drop images'}
+              </span>
+              <span className="text-xs text-slate-500 mt-1">PNG, JPG, or WebP — multiple files supported</span>
               <input
+                ref={fileInputRef}
                 type="file"
+                multiple
                 accept="image/png,image/jpeg,image/webp"
                 onChange={handleFileSelect}
                 className="hidden"
               />
-            </label>
+            </div>
           </div>
         )}
 
@@ -264,19 +369,21 @@ export default function QrScanDialog({ open, onClose }: QrScanDialogProps) {
         {result && (
           <p
             className={`text-sm mb-3 ${
-              result.includes('Error') || result.includes('No QR') || result.includes('not contain')
+              result.includes('Error') || result.includes('No QR') || result.includes('not contain') || result.includes('No image')
                 ? 'text-danger'
-                : 'text-success'
+                : result.includes('failed')
+                  ? 'text-warning'
+                  : 'text-success'
             }`}
           >
             {result}
           </p>
         )}
 
-        {loading && (
+        {(loading || progress) && (
           <div className="flex items-center gap-2 mb-3">
             <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-slate-400">Processing...</span>
+            <span className="text-sm text-slate-400">{progress || 'Processing...'}</span>
           </div>
         )}
 

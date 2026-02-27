@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useRef, useEffect } from 'react'
 
 interface CopyButtonProps {
   text: string
@@ -6,11 +6,19 @@ interface CopyButtonProps {
 
 export default function CopyButton({ text }: CopyButtonProps) {
   const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [])
 
   const handleCopy = useCallback(async () => {
     await window.api.clipboardCopy(text)
     setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 1500)
   }, [text])
 
   return (

@@ -73,6 +73,10 @@ export function registerIpcHandlers(): void {
     vaultManager.reorderAccounts(orderedIds)
   })
 
+  ipcMain.handle(IPC.ACCOUNTS_UPDATE, (_e, id: string, updates: { issuer?: string; label?: string }) => {
+    vaultManager.updateAccountMeta(id, updates)
+  })
+
   ipcMain.handle(IPC.ACCOUNTS_IMPORT_URI, (_e, input: string): ImportResult => {
     const lines = input.split('\n').map(l => l.trim()).filter(l => l.startsWith('otpauth://'))
     const result: ImportResult = { imported: 0, skipped: 0, errors: [] }
@@ -160,6 +164,18 @@ export function registerIpcHandlers(): void {
   // API key
   ipcMain.handle(IPC.API_GET_KEY, () => vaultManager.getApiKey())
   ipcMain.handle(IPC.API_REGENERATE_KEY, () => vaultManager.regenerateApiKey())
+
+  // LAN IP
+  ipcMain.handle(IPC.API_GET_LAN_IP, () => {
+    const os = require('os')
+    const nets = os.networkInterfaces()
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]!) {
+        if (net.family === 'IPv4' && !net.internal) return net.address
+      }
+    }
+    return '0.0.0.0'
+  })
 
   // Biometric
   ipcMain.handle(IPC.BIOMETRIC_AVAILABLE, () => isBiometricAvailable() && hasBiometricKey())
